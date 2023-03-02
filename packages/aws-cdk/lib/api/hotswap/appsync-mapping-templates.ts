@@ -1,20 +1,23 @@
 import * as AWS from 'aws-sdk';
 import { ISDK } from '../aws-auth';
+
 import { EvaluateCloudFormationTemplate } from '../evaluate-cloudformation-template';
 import { ChangeHotswapImpact, ChangeHotswapResult, HotswapOperation, HotswappableChangeCandidate, lowerCaseFirstCharacter, transformObjectKeys } from './common';
+import { GetSchemaCreationStatusRequest, GetSchemaCreationStatusResponse } from 'aws-sdk/clients/appsync';
 
 export async function isHotswappableAppSyncChange(
   logicalId: string, change: HotswappableChangeCandidate, evaluateCfnTemplate: EvaluateCloudFormationTemplate,
 ): Promise<ChangeHotswapResult> {
   const isResolver = change.newValue.Type === 'AWS::AppSync::Resolver';
   const isFunction = change.newValue.Type === 'AWS::AppSync::FunctionConfiguration';
+  const isGraphQLSchema = change.newValue.Type === 'AWS::AppSync::GraphQLSchema';
 
-  if (!isResolver && !isFunction) {
+  if (!isResolver && !isFunction && !isGraphQLSchema) {
     return ChangeHotswapImpact.REQUIRES_FULL_DEPLOYMENT;
   }
 
   for (const updatedPropName in change.propertyUpdates) {
-    if (updatedPropName !== 'RequestMappingTemplate' && updatedPropName !== 'ResponseMappingTemplate') {
+    if ((isResolver || isFunction) && updatedPropName !== 'RequestMappingTemplate' && updatedPropName !== 'ResponseMappingTemplate') {
       return ChangeHotswapImpact.REQUIRES_FULL_DEPLOYMENT;
     }
   }
@@ -41,8 +44,10 @@ export async function isHotswappableAppSyncChange(
     const arnParts = resourcePhysicalName.split('/');
     const resolverName = `${arnParts[3]}.${arnParts[5]}`;
     return new ResolverHotswapOperation(resolverName, sdkCompatibleResourceProperties);
-  } else {
+  } else if (isFunction) {
     return new FunctionHotswapOperation(resourcePhysicalName, sdkCompatibleResourceProperties);
+  } else {
+    return new GraphQLSchemaHotswapOperation(resourcePhysicalName, sdkCompatibleResourceProperties);
   }
 }
 
@@ -56,6 +61,31 @@ class ResolverHotswapOperation implements HotswapOperation {
 
   public async apply(sdk: ISDK): Promise<any> {
     return sdk.appsync().updateResolver(this.updateResolverRequest).promise();
+  }
+}
+
+class GraphQLSchemaHotswapOperation implements HotswapOperation {
+  public readonly service = 'appsync'
+  public readonly resourceNames: string[];
+
+  constructor(graphQLSchemaName: string, private readonly updateSchemaRequest: AWS.AppSync.StartSchemaCreationRequest) {
+    this.resourceNames = [`AppSync graphQLSchema '${graphQLSchemaName}'`];
+  }
+
+  public async apply(sdk: ISDK): Promise<any> {
+    let schemaCreationResponse: GetSchemaCreationStatusResponse = await sdk.appsync().startSchemaCreation(this.updateSchemaRequest).promise();
+    while (schemaCreationResponse.status && ['PROCESSING', 'DELETING'].some(status => status === schemaCreationResponse.status)) {
+      await new Promise(resolve => setTimeout(resolve, 1000)); // poll every second
+      const getSchemaCreationStatusRequest: GetSchemaCreationStatusRequest = {
+        apiId: this.updateSchemaRequest.apiId,
+      };
+      schemaCreationResponse = await sdk.appsync().getSchemaCreationStatus(getSchemaCreationStatusRequest).promise();
+    }
+    if (schemaCreationResponse.status === 'FAILED') {
+      throw new Error(schemaCreationResponse.details);
+    } else {
+      return schemaCreationResponse;
+    }
   }
 }
 

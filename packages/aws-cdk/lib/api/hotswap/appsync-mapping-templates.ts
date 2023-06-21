@@ -1,9 +1,8 @@
-import * as AWS from 'aws-sdk';
+import { GetSchemaCreationStatusRequest, GetSchemaCreationStatusResponse } from 'aws-sdk/clients/appsync';
 import { ISDK } from '../aws-auth';
 
 import { EvaluateCloudFormationTemplate } from '../evaluate-cloudformation-template';
-import { ChangeHotswapImpact, ChangeHotswapResult, HotswapOperation, HotswappableChangeCandidate, lowerCaseFirstCharacter, transformObjectKeys } from './common';
-import { GetSchemaCreationStatusRequest, GetSchemaCreationStatusResponse } from 'aws-sdk/clients/appsync';
+import { ChangeHotswapResult, classifyChanges, HotswappableChangeCandidate, lowerCaseFirstCharacter, reportNonHotswappableChange, transformObjectKeys } from './common';
 
 export async function isHotswappableAppSyncChange(
   logicalId: string, change: HotswappableChangeCandidate, evaluateCfnTemplate: EvaluateCloudFormationTemplate,
@@ -13,56 +12,86 @@ export async function isHotswappableAppSyncChange(
   const isGraphQLSchema = change.newValue.Type === 'AWS::AppSync::GraphQLSchema';
 
   if (!isResolver && !isFunction && !isGraphQLSchema) {
-    return ChangeHotswapImpact.REQUIRES_FULL_DEPLOYMENT;
+    return [];
   }
 
-  for (const updatedPropName in change.propertyUpdates) {
-    if ((isResolver || isFunction) && updatedPropName !== 'RequestMappingTemplate' && updatedPropName !== 'ResponseMappingTemplate') {
-      return ChangeHotswapImpact.REQUIRES_FULL_DEPLOYMENT;
+  const ret: ChangeHotswapResult = [];
+  if (isResolver && change.newValue.Properties?.Kind === 'PIPELINE') {
+    reportNonHotswappableChange(
+      ret,
+      change,
+      undefined,
+      'Pipeline resolvers cannot be hotswapped since they reference the FunctionId of the underlying functions, which cannot be resolved',
+    );
+    return ret;
+  }
+
+  const classifiedChanges = classifyChanges(change, [
+    'RequestMappingTemplate',
+    'ResponseMappingTemplate',
+    'Definition',
+  ]);
+  classifiedChanges.reportNonHotswappablePropertyChanges(ret);
+
+  const namesOfHotswappableChanges = Object.keys(classifiedChanges.hotswappableProps);
+  if (namesOfHotswappableChanges.length > 0) {
+    let physicalName: string | undefined = undefined;
+    const arn = await evaluateCfnTemplate.establishResourcePhysicalName(logicalId, isFunction ? change.newValue.Properties?.Name : undefined);
+    if (isResolver) {
+      const arnParts = arn?.split('/');
+      physicalName = arnParts ? `${arnParts[3]}.${arnParts[5]}` : undefined;
+    } else {
+      physicalName = arn;
     }
+    ret.push({
+      hotswappable: true,
+      resourceType: change.newValue.Type,
+      propsChanged: namesOfHotswappableChanges,
+      service: 'appsync',
+      resourceNames: [`${change.newValue.Type} '${physicalName}'`],
+      apply: async (sdk: ISDK) => {
+        if (!physicalName) {
+          return;
+        }
+
+        const sdkProperties: { [name: string]: any } = {
+          ...change.oldValue.Properties,
+          requestMappingTemplate: change.newValue.Properties?.RequestMappingTemplate,
+          responseMappingTemplate: change.newValue.Properties?.ResponseMappingTemplate,
+        };
+        const evaluatedResourceProperties = await evaluateCfnTemplate.evaluateCfnExpression(sdkProperties);
+        const sdkRequestObject = transformObjectKeys(evaluatedResourceProperties, lowerCaseFirstCharacter);
+
+        if (isResolver) {
+          await sdk.appsync().updateResolver(sdkRequestObject).promise();
+        } else if (isFunction) {
+          const { functions } = await sdk.appsync().listFunctions({ apiId: sdkRequestObject.apiId }).promise();
+          const { functionId } = functions?.find(fn => fn.name === physicalName) ?? {};
+          await sdk.appsync().updateFunction({
+            ...sdkRequestObject,
+            functionId: functionId!,
+          }).promise();
+        } else {
+          let schemaCreationResponse: GetSchemaCreationStatusResponse = await sdk.appsync().startSchemaCreation(sdkRequestObject).promise();
+          while (schemaCreationResponse.status && ['PROCESSING', 'DELETING'].some(status => status === schemaCreationResponse.status)) {
+            await new Promise(resolve => setTimeout(resolve, 1000)); // poll every second
+            const getSchemaCreationStatusRequest: GetSchemaCreationStatusRequest = {
+              apiId: sdkRequestObject.apiId,
+            };
+            schemaCreationResponse = await sdk.appsync().getSchemaCreationStatus(getSchemaCreationStatusRequest).promise();
+          }
+          if (schemaCreationResponse.status === 'FAILED') {
+            throw new Error(schemaCreationResponse.details);
+          }
+        }
+      },
+    });
   }
 
-  const resourceProperties = change.newValue.Properties;
-  if (isResolver && resourceProperties?.Kind === 'PIPELINE') {
-    // Pipeline resolvers can't be hotswapped as they reference
-    // the FunctionId of the underlying functions, which can't be resolved.
-    return ChangeHotswapImpact.REQUIRES_FULL_DEPLOYMENT;
-  }
-
-  const resourcePhysicalName = await evaluateCfnTemplate.establishResourcePhysicalName(logicalId, isFunction ? resourceProperties?.Name : undefined);
-  if (!resourcePhysicalName) {
-    return ChangeHotswapImpact.REQUIRES_FULL_DEPLOYMENT;
-  }
-
-  const evaluatedResourceProperties = await evaluateCfnTemplate.evaluateCfnExpression(resourceProperties);
-  const sdkCompatibleResourceProperties = transformObjectKeys(evaluatedResourceProperties, lowerCaseFirstCharacter);
-
-  if (isResolver) {
-    // Resolver physical name is the ARN in the format:
-    // arn:aws:appsync:us-east-1:111111111111:apis/<apiId>/types/<type>/resolvers/<field>.
-    // We'll use `<type>.<field>` as the resolver name.
-    const arnParts = resourcePhysicalName.split('/');
-    const resolverName = `${arnParts[3]}.${arnParts[5]}`;
-    return new ResolverHotswapOperation(resolverName, sdkCompatibleResourceProperties);
-  } else if (isFunction) {
-    return new FunctionHotswapOperation(resourcePhysicalName, sdkCompatibleResourceProperties);
-  } else {
-    return new GraphQLSchemaHotswapOperation(resourcePhysicalName, sdkCompatibleResourceProperties);
-  }
+  return ret;
 }
 
-class ResolverHotswapOperation implements HotswapOperation {
-  public readonly service = 'appsync'
-  public readonly resourceNames: string[];
-
-  constructor(resolverName: string, private readonly updateResolverRequest: AWS.AppSync.UpdateResolverRequest) {
-    this.resourceNames = [`AppSync resolver '${resolverName}'`];
-  }
-
-  public async apply(sdk: ISDK): Promise<any> {
-    return sdk.appsync().updateResolver(this.updateResolverRequest).promise();
-  }
-}
+/*
 
 class GraphQLSchemaHotswapOperation implements HotswapOperation {
   public readonly service = 'appsync'
@@ -88,25 +117,4 @@ class GraphQLSchemaHotswapOperation implements HotswapOperation {
     }
   }
 }
-
-class FunctionHotswapOperation implements HotswapOperation {
-  public readonly service = 'appsync'
-  public readonly resourceNames: string[];
-
-  constructor(
-    private readonly functionName: string,
-    private readonly updateFunctionRequest: Omit<AWS.AppSync.UpdateFunctionRequest, 'functionId'>,
-  ) {
-    this.resourceNames = [`AppSync function '${functionName}'`];
-  }
-
-  public async apply(sdk: ISDK): Promise<any> {
-    const { functions } = await sdk.appsync().listFunctions({ apiId: this.updateFunctionRequest.apiId }).promise();
-    const { functionId } = functions?.find(fn => fn.name === this.functionName) ?? {};
-    const request = {
-      ...this.updateFunctionRequest,
-      functionId: functionId!,
-    };
-    return sdk.appsync().updateFunction(request).promise();
-  }
-}
+*/

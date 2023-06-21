@@ -58,15 +58,16 @@ import * as path from 'path';
 import * as cxschema from '@aws-cdk/cloud-assembly-schema';
 import { Manifest } from '@aws-cdk/cloud-assembly-schema';
 import * as cxapi from '@aws-cdk/cx-api';
+import { instanceMockFrom, MockCloudExecutable, TestStackArtifact } from './util';
+import { MockSdkProvider } from './util/mock-sdk';
 import { Bootstrapper } from '../lib/api/bootstrap';
-import { CloudFormationDeployments, DeployStackOptions, DestroyStackOptions } from '../lib/api/cloudformation-deployments';
 import { DeployStackResult } from '../lib/api/deploy-stack';
+import { Deployments, DeployStackOptions, DestroyStackOptions } from '../lib/api/deployments';
+import { HotswapMode } from '../lib/api/hotswap/common';
 import { Template } from '../lib/api/util/cloudformation';
-import { CdkToolkit, Tag, AssetBuildTime } from '../lib/cdk-toolkit';
+import { CdkToolkit, Tag } from '../lib/cdk-toolkit';
 import { RequireApproval } from '../lib/diff';
 import { flatten } from '../lib/util';
-import { instanceMockFrom, MockCloudExecutable, TestStackArtifact, withMocked } from './util';
-import { MockSdkProvider } from './util/mock-sdk';
 
 let cloudExecutable: MockCloudExecutable;
 let bootstrapper: jest.Mocked<Bootstrapper>;
@@ -99,7 +100,7 @@ function defaultToolkitSetup() {
     cloudExecutable,
     configuration: cloudExecutable.configuration,
     sdkProvider: cloudExecutable.sdkProvider,
-    cloudFormation: new FakeCloudFormation({
+    deployments: new FakeCloudFormation({
       'Test-Stack-A': { Foo: 'Bar' },
       'Test-Stack-B': { Baz: 'Zinga!' },
       'Test-Stack-C': { Baz: 'Zinga!' },
@@ -146,7 +147,9 @@ describe('readCurrentTemplate', () => {
         },
       ],
     });
-    mockForEnvironment = jest.fn().mockImplementation(() => { return { sdk: mockCloudExecutable.sdkProvider.sdk, didAssumeRole: true }; });
+    mockForEnvironment = jest.fn().mockImplementation(() => {
+      return { sdk: mockCloudExecutable.sdkProvider.sdk, didAssumeRole: true };
+    });
     mockCloudExecutable.sdkProvider.forEnvironment = mockForEnvironment;
     mockCloudExecutable.sdkProvider.stubCloudFormation({
       getTemplate() {
@@ -190,12 +193,13 @@ describe('readCurrentTemplate', () => {
       cloudExecutable: mockCloudExecutable,
       configuration: mockCloudExecutable.configuration,
       sdkProvider: mockCloudExecutable.sdkProvider,
-      cloudFormation: new CloudFormationDeployments({ sdkProvider: mockCloudExecutable.sdkProvider }),
+      deployments: new Deployments({ sdkProvider: mockCloudExecutable.sdkProvider }),
     });
 
     // WHEN
     await cdkToolkit.deploy({
       selector: { patterns: ['Test-Stack-C'] },
+      hotswap: HotswapMode.FULL_DEPLOYMENT,
     });
 
     // THEN
@@ -223,12 +227,13 @@ describe('readCurrentTemplate', () => {
       cloudExecutable: mockCloudExecutable,
       configuration: mockCloudExecutable.configuration,
       sdkProvider: mockCloudExecutable.sdkProvider,
-      cloudFormation: new CloudFormationDeployments({ sdkProvider: mockCloudExecutable.sdkProvider }),
+      deployments: new Deployments({ sdkProvider: mockCloudExecutable.sdkProvider }),
     });
 
     // WHEN
     await cdkToolkit.deploy({
       selector: { patterns: ['Test-Stack-C'] },
+      hotswap: HotswapMode.FULL_DEPLOYMENT,
     });
 
     // THEN
@@ -257,12 +262,13 @@ describe('readCurrentTemplate', () => {
       cloudExecutable: mockCloudExecutable,
       configuration: mockCloudExecutable.configuration,
       sdkProvider: mockCloudExecutable.sdkProvider,
-      cloudFormation: new CloudFormationDeployments({ sdkProvider: mockCloudExecutable.sdkProvider }),
+      deployments: new Deployments({ sdkProvider: mockCloudExecutable.sdkProvider }),
     });
 
     // WHEN
     await cdkToolkit.deploy({
       selector: { patterns: ['Test-Stack-C'] },
+      hotswap: HotswapMode.FULL_DEPLOYMENT,
     });
 
     // THEN
@@ -294,12 +300,13 @@ describe('readCurrentTemplate', () => {
       cloudExecutable: mockCloudExecutable,
       configuration: mockCloudExecutable.configuration,
       sdkProvider: mockCloudExecutable.sdkProvider,
-      cloudFormation: new CloudFormationDeployments({ sdkProvider: mockCloudExecutable.sdkProvider }),
+      deployments: new Deployments({ sdkProvider: mockCloudExecutable.sdkProvider }),
     });
 
     // WHEN
     await cdkToolkit.deploy({
       selector: { patterns: ['Test-Stack-C'] },
+      hotswap: HotswapMode.FULL_DEPLOYMENT,
     });
 
     // THEN
@@ -325,7 +332,7 @@ describe('readCurrentTemplate', () => {
       cloudExecutable: mockCloudExecutable,
       configuration: mockCloudExecutable.configuration,
       sdkProvider: mockCloudExecutable.sdkProvider,
-      cloudFormation: new CloudFormationDeployments({ sdkProvider: mockCloudExecutable.sdkProvider }),
+      deployments: new Deployments({ sdkProvider: mockCloudExecutable.sdkProvider }),
     });
     mockCloudExecutable.sdkProvider.stubSSM({
       getParameter() {
@@ -336,6 +343,7 @@ describe('readCurrentTemplate', () => {
     // WHEN
     await cdkToolkit.deploy({
       selector: { patterns: ['Test-Stack-C'] },
+      hotswap: HotswapMode.FULL_DEPLOYMENT,
     });
 
     // THEN
@@ -363,12 +371,13 @@ describe('readCurrentTemplate', () => {
       cloudExecutable: mockCloudExecutable,
       configuration: mockCloudExecutable.configuration,
       sdkProvider: mockCloudExecutable.sdkProvider,
-      cloudFormation: new CloudFormationDeployments({ sdkProvider: mockCloudExecutable.sdkProvider }),
+      deployments: new Deployments({ sdkProvider: mockCloudExecutable.sdkProvider }),
     });
 
     // WHEN
     await cdkToolkit.deploy({
       selector: { patterns: ['Test-Stack-A'] },
+      hotswap: HotswapMode.FULL_DEPLOYMENT,
     });
 
     // THEN
@@ -391,13 +400,16 @@ describe('deploy', () => {
     const toolkit = defaultToolkitSetup();
 
     // WHEN
-    await expect(() => toolkit.deploy({ selector: { patterns: ['Test-Stack-D'] } })).rejects.toThrow('No stacks match the name(s) Test-Stack-D');
+    await expect(() => toolkit.deploy({
+      selector: { patterns: ['Test-Stack-D'] },
+      hotswap: HotswapMode.FULL_DEPLOYMENT,
+    })).rejects.toThrow('No stacks match the name(s) Test-Stack-D');
   });
 
   describe('with hotswap deployment', () => {
     test("passes through the 'hotswap' option to CloudFormationDeployments.deployStack()", async () => {
       // GIVEN
-      const mockCfnDeployments = instanceMockFrom(CloudFormationDeployments);
+      const mockCfnDeployments = instanceMockFrom(Deployments);
       mockCfnDeployments.deployStack.mockReturnValue(Promise.resolve({
         noOp: false,
         outputs: {},
@@ -408,19 +420,19 @@ describe('deploy', () => {
         cloudExecutable,
         configuration: cloudExecutable.configuration,
         sdkProvider: cloudExecutable.sdkProvider,
-        cloudFormation: mockCfnDeployments,
+        deployments: mockCfnDeployments,
       });
 
       // WHEN
       await cdkToolkit.deploy({
         selector: { patterns: ['Test-Stack-A-Display-Name'] },
         requireApproval: RequireApproval.Never,
-        hotswap: true,
+        hotswap: HotswapMode.FALL_BACK,
       });
 
       // THEN
       expect(mockCfnDeployments.deployStack).toHaveBeenCalledWith(expect.objectContaining({
-        hotswap: true,
+        hotswap: HotswapMode.FALL_BACK,
       }));
     });
   });
@@ -431,7 +443,10 @@ describe('deploy', () => {
       const toolkit = defaultToolkitSetup();
 
       // WHEN
-      await toolkit.deploy({ selector: { patterns: ['Test-Stack-A', 'Test-Stack-B'] } });
+      await toolkit.deploy({
+        selector: { patterns: ['Test-Stack-A', 'Test-Stack-B'] },
+        hotswap: HotswapMode.FULL_DEPLOYMENT,
+      });
     });
 
     test('with stacks all stacks specified as double wildcard', async () => {
@@ -439,16 +454,21 @@ describe('deploy', () => {
       const toolkit = defaultToolkitSetup();
 
       // WHEN
-      await toolkit.deploy({ selector: { patterns: ['**'] } });
+      await toolkit.deploy({
+        selector: { patterns: ['**'] },
+        hotswap: HotswapMode.FULL_DEPLOYMENT,
+      });
     });
-
 
     test('with one stack specified', async () => {
       // GIVEN
       const toolkit = defaultToolkitSetup();
 
       // WHEN
-      await toolkit.deploy({ selector: { patterns: ['Test-Stack-A-Display-Name'] } });
+      await toolkit.deploy({
+        selector: { patterns: ['Test-Stack-A-Display-Name'] },
+        hotswap: HotswapMode.FULL_DEPLOYMENT,
+      });
     });
 
     test('with stacks all stacks specified as wildcard', async () => {
@@ -456,7 +476,10 @@ describe('deploy', () => {
       const toolkit = defaultToolkitSetup();
 
       // WHEN
-      await toolkit.deploy({ selector: { patterns: ['*'] } });
+      await toolkit.deploy({
+        selector: { patterns: ['*'] },
+        hotswap: HotswapMode.FULL_DEPLOYMENT,
+      });
     });
 
     test('with sns notification arns', async () => {
@@ -469,7 +492,7 @@ describe('deploy', () => {
         cloudExecutable,
         configuration: cloudExecutable.configuration,
         sdkProvider: cloudExecutable.sdkProvider,
-        cloudFormation: new FakeCloudFormation({
+        deployments: new FakeCloudFormation({
           'Test-Stack-A': { Foo: 'Bar' },
           'Test-Stack-B': { Baz: 'Zinga!' },
         }, notificationArns),
@@ -479,6 +502,7 @@ describe('deploy', () => {
       await toolkit.deploy({
         selector: { patterns: ['Test-Stack-A', 'Test-Stack-B'] },
         notificationArns,
+        hotswap: HotswapMode.FULL_DEPLOYMENT,
       });
     });
 
@@ -489,7 +513,7 @@ describe('deploy', () => {
         cloudExecutable,
         configuration: cloudExecutable.configuration,
         sdkProvider: cloudExecutable.sdkProvider,
-        cloudFormation: new FakeCloudFormation({
+        deployments: new FakeCloudFormation({
           'Test-Stack-A': { Foo: 'Bar' },
         }, notificationArns),
       });
@@ -499,6 +523,7 @@ describe('deploy', () => {
         toolkit.deploy({
           selector: { patterns: ['Test-Stack-A'] },
           notificationArns,
+          hotswap: HotswapMode.FULL_DEPLOYMENT,
         }),
       ).rejects.toThrow('Notification arn arn:::cfn-my-cool-topic is not a valid arn for an SNS topic');
 
@@ -559,62 +584,6 @@ describe('deploy', () => {
       expect(cloudExecutable.hasApp).toEqual(false);
       expect(mockSynthesize).not.toHaveBeenCalled();
     });
-
-    test('can disable asset parallelism', async () => {
-      // GIVEN
-      cloudExecutable = new MockCloudExecutable({
-        stacks: [MockStack.MOCK_STACK_WITH_ASSET],
-      });
-      const fakeCloudFormation = new FakeCloudFormation({});
-
-      const toolkit = new CdkToolkit({
-        cloudExecutable,
-        configuration: cloudExecutable.configuration,
-        sdkProvider: cloudExecutable.sdkProvider,
-        cloudFormation: fakeCloudFormation,
-      });
-
-      // WHEN
-      // Not the best test but following this through to the asset publishing library fails
-      await withMocked(fakeCloudFormation, 'buildStackAssets', async (mockBuildStackAssets) => {
-        await toolkit.deploy({
-          selector: { patterns: ['Test-Stack-Asset'] },
-          assetParallelism: false,
-        });
-
-        expect(mockBuildStackAssets).toHaveBeenCalledWith(expect.objectContaining({
-          buildOptions: expect.objectContaining({
-            parallel: false,
-          }),
-        }));
-      });
-    });
-
-    test('can disable asset prebuild', async () => {
-      // GIVEN
-      cloudExecutable = new MockCloudExecutable({
-        stacks: [MockStack.MOCK_STACK_WITH_ASSET],
-      });
-      const fakeCloudFormation = new FakeCloudFormation({});
-
-      const toolkit = new CdkToolkit({
-        cloudExecutable,
-        configuration: cloudExecutable.configuration,
-        sdkProvider: cloudExecutable.sdkProvider,
-        cloudFormation: fakeCloudFormation,
-      });
-
-      // WHEN
-      // Not the best test but following this through to the asset publishing library fails
-      await withMocked(fakeCloudFormation, 'buildStackAssets', async (mockBuildStackAssets) => {
-        await toolkit.deploy({
-          selector: { patterns: ['Test-Stack-Asset'] },
-          assetBuildTime: AssetBuildTime.JUST_IN_TIME,
-        });
-
-        expect(mockBuildStackAssets).not.toHaveBeenCalled();
-      });
-    });
   });
 });
 
@@ -638,7 +607,10 @@ describe('watch', () => {
     const toolkit = defaultToolkitSetup();
 
     await expect(() => {
-      return toolkit.watch({ selector: { patterns: [] } });
+      return toolkit.watch({
+        selector: { patterns: [] },
+        hotswap: HotswapMode.HOTSWAP_ONLY,
+      });
     }).rejects.toThrow("Cannot use the 'watch' command without specifying at least one directory to monitor. " +
       'Make sure to add a "watch" key to your cdk.json');
   });
@@ -647,7 +619,10 @@ describe('watch', () => {
     cloudExecutable.configuration.settings.set(['watch'], {});
     const toolkit = defaultToolkitSetup();
 
-    await toolkit.watch({ selector: { patterns: [] } });
+    await toolkit.watch({
+      selector: { patterns: [] },
+      hotswap: HotswapMode.HOTSWAP_ONLY,
+    });
 
     const includeArgs = fakeChokidarWatch.includeArgs;
     expect(includeArgs.length).toBe(1);
@@ -659,7 +634,10 @@ describe('watch', () => {
     });
     const toolkit = defaultToolkitSetup();
 
-    await toolkit.watch({ selector: { patterns: [] } });
+    await toolkit.watch({
+      selector: { patterns: [] },
+      hotswap: HotswapMode.HOTSWAP_ONLY,
+    });
 
     expect(fakeChokidarWatch.includeArgs).toStrictEqual(['my-dir']);
   });
@@ -670,7 +648,10 @@ describe('watch', () => {
     });
     const toolkit = defaultToolkitSetup();
 
-    await toolkit.watch({ selector: { patterns: [] } });
+    await toolkit.watch({
+      selector: { patterns: [] },
+      hotswap: HotswapMode.HOTSWAP_ONLY,
+    });
 
     expect(fakeChokidarWatch.includeArgs).toStrictEqual(['my-dir1', '**/my-dir2/*']);
   });
@@ -680,7 +661,10 @@ describe('watch', () => {
     cloudExecutable.configuration.settings.set(['output'], 'cdk.out');
     const toolkit = defaultToolkitSetup();
 
-    await toolkit.watch({ selector: { patterns: [] } });
+    await toolkit.watch({
+      selector: { patterns: [] },
+      hotswap: HotswapMode.HOTSWAP_ONLY,
+    });
 
     expect(fakeChokidarWatch.excludeArgs).toStrictEqual([
       'cdk.out/**',
@@ -696,7 +680,10 @@ describe('watch', () => {
     });
     const toolkit = defaultToolkitSetup();
 
-    await toolkit.watch({ selector: { patterns: [] } });
+    await toolkit.watch({
+      selector: { patterns: [] },
+      hotswap: HotswapMode.HOTSWAP_ONLY,
+    });
 
     const excludeArgs = fakeChokidarWatch.excludeArgs;
     expect(excludeArgs.length).toBe(5);
@@ -709,7 +696,10 @@ describe('watch', () => {
     });
     const toolkit = defaultToolkitSetup();
 
-    await toolkit.watch({ selector: { patterns: [] } });
+    await toolkit.watch({
+      selector: { patterns: [] },
+      hotswap: HotswapMode.HOTSWAP_ONLY,
+    });
 
     const excludeArgs = fakeChokidarWatch.excludeArgs;
     expect(excludeArgs.length).toBe(6);
@@ -723,10 +713,64 @@ describe('watch', () => {
     const cdkDeployMock = jest.fn();
     toolkit.deploy = cdkDeployMock;
 
-    await toolkit.watch({ selector: { patterns: [] }, concurrency: 3 });
+    await toolkit.watch({
+      selector: { patterns: [] },
+      concurrency: 3,
+      hotswap: HotswapMode.HOTSWAP_ONLY,
+    });
     fakeChokidarWatcherOn.readyCallback();
 
     expect(cdkDeployMock).toBeCalledWith(expect.objectContaining({ concurrency: 3 }));
+  });
+
+  describe.each([HotswapMode.FALL_BACK, HotswapMode.HOTSWAP_ONLY])('%p mode', (hotswapMode) => {
+    test('passes through the correct hotswap mode to deployStack()', async () => {
+      cloudExecutable.configuration.settings.set(['watch'], {});
+      const toolkit = defaultToolkitSetup();
+      const cdkDeployMock = jest.fn();
+      toolkit.deploy = cdkDeployMock;
+
+      await toolkit.watch({ selector: { patterns: [] }, hotswap: hotswapMode });
+      fakeChokidarWatcherOn.readyCallback();
+
+      expect(cdkDeployMock).toBeCalledWith(expect.objectContaining({ hotswap: hotswapMode }));
+    });
+  });
+
+  test('respects HotswapMode.HOTSWAP_ONLY', async () => {
+    cloudExecutable.configuration.settings.set(['watch'], {});
+    const toolkit = defaultToolkitSetup();
+    const cdkDeployMock = jest.fn();
+    toolkit.deploy = cdkDeployMock;
+
+    await toolkit.watch({ selector: { patterns: [] }, hotswap: HotswapMode.HOTSWAP_ONLY });
+    fakeChokidarWatcherOn.readyCallback();
+
+    expect(cdkDeployMock).toBeCalledWith(expect.objectContaining({ hotswap: HotswapMode.HOTSWAP_ONLY }));
+  });
+
+  test('respects HotswapMode.FALL_BACK', async () => {
+    cloudExecutable.configuration.settings.set(['watch'], {});
+    const toolkit = defaultToolkitSetup();
+    const cdkDeployMock = jest.fn();
+    toolkit.deploy = cdkDeployMock;
+
+    await toolkit.watch({ selector: { patterns: [] }, hotswap: HotswapMode.FALL_BACK });
+    fakeChokidarWatcherOn.readyCallback();
+
+    expect(cdkDeployMock).toBeCalledWith(expect.objectContaining({ hotswap: HotswapMode.FALL_BACK }));
+  });
+
+  test('respects HotswapMode.FULL_DEPLOYMENT', async () => {
+    cloudExecutable.configuration.settings.set(['watch'], {});
+    const toolkit = defaultToolkitSetup();
+    const cdkDeployMock = jest.fn();
+    toolkit.deploy = cdkDeployMock;
+
+    await toolkit.watch({ selector: { patterns: [] }, hotswap: HotswapMode.FULL_DEPLOYMENT });
+    fakeChokidarWatcherOn.readyCallback();
+
+    expect(cdkDeployMock).toBeCalledWith(expect.objectContaining({ hotswap: HotswapMode.FULL_DEPLOYMENT }));
   });
 
   describe('with file change events', () => {
@@ -738,7 +782,10 @@ describe('watch', () => {
       toolkit = defaultToolkitSetup();
       cdkDeployMock = jest.fn();
       toolkit.deploy = cdkDeployMock;
-      await toolkit.watch({ selector: { patterns: [] } });
+      await toolkit.watch({
+        selector: { patterns: [] },
+        hotswap: HotswapMode.HOTSWAP_ONLY,
+      });
     });
 
     test("does not trigger a 'deploy' before the 'ready' event has fired", async () => {
@@ -990,7 +1037,7 @@ class MockStack {
   }
 }
 
-class FakeCloudFormation extends CloudFormationDeployments {
+class FakeCloudFormation extends Deployments {
   private readonly expectedTags: { [stackName: string]: Tag[] } = {};
   private readonly expectedNotificationArns?: string[];
 

@@ -1,8 +1,8 @@
 import { GetSchemaCreationStatusRequest, GetSchemaCreationStatusResponse } from 'aws-sdk/clients/appsync';
+import { ChangeHotswapResult, classifyChanges, HotswappableChangeCandidate, lowerCaseFirstCharacter, reportNonHotswappableChange, transformObjectKeys } from './common';
 import { ISDK } from '../aws-auth';
 
 import { EvaluateCloudFormationTemplate } from '../evaluate-cloudformation-template';
-import { ChangeHotswapResult, classifyChanges, HotswappableChangeCandidate, lowerCaseFirstCharacter, reportNonHotswappableChange, transformObjectKeys } from './common';
 
 export async function isHotswappableAppSyncChange(
   logicalId: string, change: HotswappableChangeCandidate, evaluateCfnTemplate: EvaluateCloudFormationTemplate,
@@ -56,6 +56,7 @@ export async function isHotswappableAppSyncChange(
 
         const sdkProperties: { [name: string]: any } = {
           ...change.oldValue.Properties,
+          Definition: change.newValue.Properties?.Definition,
           requestMappingTemplate: change.newValue.Properties?.RequestMappingTemplate,
           responseMappingTemplate: change.newValue.Properties?.ResponseMappingTemplate,
         };

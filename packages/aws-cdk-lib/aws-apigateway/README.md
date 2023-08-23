@@ -63,9 +63,11 @@ book.addMethod('DELETE');
 To give an IAM User or Role permission to invoke a method, use `grantExecute`:
 
 ```ts
-declare user: iam.User;
-const books = api.root.addResource('books');
-books.grantExecute(user);
+declare const api: apigateway.RestApi;
+declare const user: iam.User;
+
+const method = api.root.addResource('books').addMethod('GET');
+method.grantExecute(user);
 ```
 
 ## AWS Lambda-backed APIs
@@ -962,6 +964,19 @@ so if you create multiple `RestApi`s with `cloudWatchRole=true` each new `RestAp
 will overwrite the `CfnAccount`. It is recommended to set `cloudWatchRole=false`
 (the default behavior if `@aws-cdk/aws-apigateway:disableCloudWatchRole` is enabled)
 and only create a single CloudWatch role and account per environment.
+
+You can specify the CloudWatch Role and Account sub-resources removal policy with the
+`cloudWatchRoleRemovalPolicy` property, which defaults to `RemovalPolicy.RETAIN`.
+This option requires `cloudWatchRole` to be enabled.
+
+```ts
+import * as cdk from 'aws-cdk-lib/core';
+
+const api = new apigateway.RestApi(this, 'books', {
+  cloudWatchRole: true,
+  cloudWatchRoleRemovalPolicy: cdk.RemovalPolicy.DESTROY,
+});
+```
 
 ### Deep dive: Invalidation of deployments
 

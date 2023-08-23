@@ -1,5 +1,5 @@
 import { Construct, IConstruct } from 'constructs';
-import { AdotInstrumentationConfig } from './adot-layers';
+import { AdotInstrumentationConfig, AdotLambdaExecWrapper } from './adot-layers';
 import { AliasOptions, Alias } from './alias';
 import { Architecture } from './architecture';
 import { Code, CodeConfig } from './code';
@@ -16,7 +16,7 @@ import { CfnFunction } from './lambda.generated';
 import { LayerVersion, ILayerVersion } from './layers';
 import { LogRetentionRetryOptions } from './log-retention';
 import { ParamsAndSecretsLayerVersion } from './params-and-secrets-layers';
-import { Runtime } from './runtime';
+import { Runtime, RuntimeFamily } from './runtime';
 import { RuntimeManagementMode } from './runtime-management';
 import { addAlias } from './util';
 import * as cloudwatch from '../../aws-cloudwatch';
@@ -1157,6 +1157,12 @@ Environment variables can be marked for removal when used in Lambda@Edge by sett
       throw new Error('Runtime go1.x is not supported by the ADOT Lambda Go SDK');
     }
 
+    // The Runtime is Python and Adot is set it requires a different EXEC_WRAPPER than the other code bases.
+    if (this.runtime.family === RuntimeFamily.PYTHON &&
+      props.adotInstrumentation.execWrapper.valueOf() !== AdotLambdaExecWrapper.INSTRUMENT_HANDLER) {
+      throw new Error('Python Adot Lambda layer requires AdotLambdaExecWrapper.INSTRUMENT_HANDLER');
+    }
+
     this.addLayers(LayerVersion.fromLayerVersionArn(this, 'AdotLayer', props.adotInstrumentation.layerVersion._bind(this).arn));
     this.addEnvironment('AWS_LAMBDA_EXEC_WRAPPER', props.adotInstrumentation.execWrapper);
   }
@@ -1216,11 +1222,20 @@ Environment variables can be marked for removal when used in Lambda@Edge by sett
    * Lambda creation properties.
    */
   private configureVpc(props: FunctionProps): CfnFunction.VpcConfigProperty | undefined {
-    if ((props.securityGroup || props.allowAllOutbound !== undefined) && !props.vpc) {
-      throw new Error('Cannot configure \'securityGroup\' or \'allowAllOutbound\' without configuring a VPC');
+    if (props.securityGroup && props.securityGroups) {
+      throw new Error('Only one of the function props, securityGroup or securityGroups, is allowed');
     }
 
     if (!props.vpc) {
+      if (props.allowAllOutbound !== undefined) {
+        throw new Error('Cannot configure \'allowAllOutbound\' without configuring a VPC');
+      }
+      if (props.securityGroup) {
+        throw new Error('Cannot configure \'securityGroup\' without configuring a VPC');
+      }
+      if (props.securityGroups) {
+        throw new Error('Cannot configure \'securityGroups\' without configuring a VPC');
+      }
       if (props.vpcSubnets) {
         throw new Error('Cannot configure \'vpcSubnets\' without configuring a VPC');
       }
@@ -1231,11 +1246,11 @@ Environment variables can be marked for removal when used in Lambda@Edge by sett
       throw new Error('Configure \'allowAllOutbound\' directly on the supplied SecurityGroup.');
     }
 
-    let securityGroups: ec2.ISecurityGroup[];
-
-    if (props.securityGroup && props.securityGroups) {
-      throw new Error('Only one of the function props, securityGroup or securityGroups, is allowed');
+    if (props.securityGroups && props.allowAllOutbound !== undefined) {
+      throw new Error('Configure \'allowAllOutbound\' directly on the supplied SecurityGroups.');
     }
+
+    let securityGroups: ec2.ISecurityGroup[];
 
     if (props.securityGroups) {
       securityGroups = props.securityGroups;

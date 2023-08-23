@@ -632,14 +632,25 @@ abstract class DatabaseClusterNew extends DatabaseClusterBase {
    *
    * @internal
    */
-  protected _createInstances(props: DatabaseClusterProps): InstanceConfig {
+  protected _createInstances(cluster: DatabaseClusterNew, props: DatabaseClusterProps): InstanceConfig {
     const instanceEndpoints: Endpoint[] = [];
     const instanceIdentifiers: string[] = [];
     const readers: IAuroraClusterInstance[] = [];
+
+    let monitoringRole = props.monitoringRole;
+    if (!props.monitoringRole && props.monitoringInterval && props.monitoringInterval.toSeconds()) {
+      monitoringRole = new Role(cluster, 'MonitoringRole', {
+        assumedBy: new ServicePrincipal('monitoring.rds.amazonaws.com'),
+        managedPolicies: [
+          ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonRDSEnhancedMonitoringRole'),
+        ],
+      });
+    }
+
     // need to create the writer first since writer is determined by what instance is first
     const writer = props.writer!.bind(this, this, {
       monitoringInterval: props.monitoringInterval,
-      monitoringRole: props.monitoringRole,
+      monitoringRole: monitoringRole,
       removalPolicy: props.removalPolicy ?? RemovalPolicy.SNAPSHOT,
       subnetGroup: this.subnetGroup,
       promotionTier: 0, // override the promotion tier so that writers are always 0
@@ -647,7 +658,7 @@ abstract class DatabaseClusterNew extends DatabaseClusterBase {
     (props.readers ?? []).forEach(instance => {
       const clusterInstance = instance.bind(this, this, {
         monitoringInterval: props.monitoringInterval,
-        monitoringRole: props.monitoringRole,
+        monitoringRole: monitoringRole,
         removalPolicy: props.removalPolicy ?? RemovalPolicy.SNAPSHOT,
         subnetGroup: this.subnetGroup,
       });
@@ -706,23 +717,27 @@ abstract class DatabaseClusterNew extends DatabaseClusterBase {
       const hasOnlyServerlessReaders = hasServerlessReader && !hasProvisionedReader;
       if (hasOnlyServerlessReaders) {
         if (noFailoverTierInstances) {
-          Annotations.of(this).addWarning(
+          Annotations.of(this).addWarningV2(
+            '@aws-cdk/aws-rds:noFailoverServerlessReaders',
             `Cluster ${this.node.id} only has serverless readers and no reader is in promotion tier 0-1.`+
             'Serverless readers in promotion tiers >= 2 will NOT scale with the writer, which can lead to '+
             'availability issues if a failover event occurs. It is recommended that at least one reader '+
             'has `scaleWithWriter` set to true',
           );
+
         }
       } else {
         if (serverlessInHighestTier && highestTier > 1) {
-          Annotations.of(this).addWarning(
+          Annotations.of(this).addWarningV2(
+            '@aws-cdk/aws-rds:serverlessInHighestTier2-15',
             `There are serverlessV2 readers in tier ${highestTier}. Since there are no instances in a higher tier, `+
             'any instance in this tier is a failover target. Since this tier is > 1 the serverless reader will not scale '+
             'with the writer which could lead to availability issues during failover.',
           );
         }
         if (someProvisionedReadersDontMatchWriter.length > 0 && writer.type === InstanceType.PROVISIONED) {
-          Annotations.of(this).addWarning(
+          Annotations.of(this).addWarningV2(
+            '@aws-cdk/aws-rds:provisionedReadersDontMatchWriter',
             `There are provisioned readers in the highest promotion tier ${highestTier} that do not have the same `+
             'InstanceSize as the writer. Any of these instances could be chosen as the new writer in the event '+
             'of a failover.\n'+
@@ -741,7 +756,7 @@ abstract class DatabaseClusterNew extends DatabaseClusterBase {
     if (writer.type === InstanceType.PROVISIONED) {
       if (reader.type === InstanceType.SERVERLESS_V2) {
         if (!instanceSizeSupportedByServerlessV2(writer.instanceSize!, this.serverlessV2MaxCapacity)) {
-          Annotations.of(this).addWarning(
+          Annotations.of(this).addWarningV2('@aws-cdk/aws-rds:serverlessInstanceCantScaleWithWriter',
             'For high availability any serverless instances in promotion tiers 0-1 '+
             'should be able to scale to match the provisioned instance capacity.\n'+
             `Serverless instance ${reader.node.id} is in promotion tier ${reader.tier},\n`+
@@ -988,7 +1003,7 @@ export class DatabaseCluster extends DatabaseClusterNew {
       throw new Error('writer must be provided');
     }
 
-    const createdInstances = props.writer ? this._createInstances(props) : legacyCreateInstances(this, props, this.subnetGroup);
+    const createdInstances = props.writer ? this._createInstances(this, props) : legacyCreateInstances(this, props, this.subnetGroup);
     this.instanceIdentifiers = createdInstances.instanceIdentifiers;
     this.instanceEndpoints = createdInstances.instanceEndpoints;
   }
@@ -1127,10 +1142,10 @@ export class DatabaseClusterFromSnapshot extends DatabaseClusterNew {
     super(scope, id, props);
 
     if (props.credentials && !props.credentials.password && !props.credentials.secret) {
-      Annotations.of(this).addWarning('Use `snapshotCredentials` to modify password of a cluster created from a snapshot.');
+      Annotations.of(this).addWarningV2('@aws-cdk/aws-rds:useSnapshotCredentials', 'Use `snapshotCredentials` to modify password of a cluster created from a snapshot.');
     }
     if (!props.credentials && !props.snapshotCredentials) {
-      Annotations.of(this).addWarning('Generated credentials will not be applied to cluster. Use `snapshotCredentials` instead. `addRotationSingleUser()` and `addRotationMultiUser()` cannot be used on this cluster.');
+      Annotations.of(this).addWarningV2('@aws-cdk/aws-rds:generatedCredsNotApplied', 'Generated credentials will not be applied to cluster. Use `snapshotCredentials` instead. `addRotationSingleUser()` and `addRotationMultiUser()` cannot be used on this cluster.');
     }
     const deprecatedCredentials = renderCredentials(this, props.engine, props.credentials);
 
@@ -1185,7 +1200,7 @@ export class DatabaseClusterFromSnapshot extends DatabaseClusterNew {
     if ((props.writer || props.readers) && (props.instances || props.instanceProps)) {
       throw new Error('Cannot provide clusterInstances if instances or instanceProps are provided');
     }
-    const createdInstances = props.writer ? this._createInstances(props) : legacyCreateInstances(this, props, this.subnetGroup);
+    const createdInstances = props.writer ? this._createInstances(this, props) : legacyCreateInstances(this, props, this.subnetGroup);
     this.instanceIdentifiers = createdInstances.instanceIdentifiers;
     this.instanceEndpoints = createdInstances.instanceEndpoints;
   }

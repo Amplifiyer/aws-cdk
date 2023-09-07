@@ -1,5 +1,7 @@
+import { GetSchemaCreationStatusRequest, GetSchemaCreationStatusResponse } from 'aws-sdk/clients/appsync';
 import { ChangeHotswapResult, classifyChanges, HotswappableChangeCandidate, lowerCaseFirstCharacter, reportNonHotswappableChange, transformObjectKeys } from './common';
 import { ISDK } from '../aws-auth';
+
 import { EvaluateCloudFormationTemplate } from '../evaluate-cloudformation-template';
 
 export async function isHotswappableAppSyncChange(
@@ -7,8 +9,9 @@ export async function isHotswappableAppSyncChange(
 ): Promise<ChangeHotswapResult> {
   const isResolver = change.newValue.Type === 'AWS::AppSync::Resolver';
   const isFunction = change.newValue.Type === 'AWS::AppSync::FunctionConfiguration';
+  const isGraphQLSchema = change.newValue.Type === 'AWS::AppSync::GraphQLSchema';
 
-  if (!isResolver && !isFunction) {
+  if (!isResolver && !isFunction && !isGraphQLSchema) {
     return [];
   }
 
@@ -23,7 +26,11 @@ export async function isHotswappableAppSyncChange(
     return ret;
   }
 
-  const classifiedChanges = classifyChanges(change, ['RequestMappingTemplate', 'ResponseMappingTemplate']);
+  const classifiedChanges = classifyChanges(change, [
+    'RequestMappingTemplate',
+    'ResponseMappingTemplate',
+    'Definition',
+  ]);
   classifiedChanges.reportNonHotswappablePropertyChanges(ret);
 
   const namesOfHotswappableChanges = Object.keys(classifiedChanges.hotswappableProps);
@@ -49,6 +56,7 @@ export async function isHotswappableAppSyncChange(
 
         const sdkProperties: { [name: string]: any } = {
           ...change.oldValue.Properties,
+          Definition: change.newValue.Properties?.Definition,
           requestMappingTemplate: change.newValue.Properties?.RequestMappingTemplate,
           responseMappingTemplate: change.newValue.Properties?.ResponseMappingTemplate,
         };
@@ -57,13 +65,25 @@ export async function isHotswappableAppSyncChange(
 
         if (isResolver) {
           await sdk.appsync().updateResolver(sdkRequestObject).promise();
-        } else {
+        } else if (isFunction) {
           const { functions } = await sdk.appsync().listFunctions({ apiId: sdkRequestObject.apiId }).promise();
           const { functionId } = functions?.find(fn => fn.name === physicalName) ?? {};
           await sdk.appsync().updateFunction({
             ...sdkRequestObject,
             functionId: functionId!,
           }).promise();
+        } else {
+          let schemaCreationResponse: GetSchemaCreationStatusResponse = await sdk.appsync().startSchemaCreation(sdkRequestObject).promise();
+          while (schemaCreationResponse.status && ['PROCESSING', 'DELETING'].some(status => status === schemaCreationResponse.status)) {
+            await new Promise(resolve => setTimeout(resolve, 1000)); // poll every second
+            const getSchemaCreationStatusRequest: GetSchemaCreationStatusRequest = {
+              apiId: sdkRequestObject.apiId,
+            };
+            schemaCreationResponse = await sdk.appsync().getSchemaCreationStatus(getSchemaCreationStatusRequest).promise();
+          }
+          if (schemaCreationResponse.status === 'FAILED') {
+            throw new Error(schemaCreationResponse.details);
+          }
         }
       },
     });

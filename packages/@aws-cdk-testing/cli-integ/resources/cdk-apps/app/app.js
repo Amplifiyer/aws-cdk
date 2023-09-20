@@ -28,7 +28,9 @@ if (process.env.PACKAGE_LAYOUT_VERSION === '1') {
 }
 
 const { Annotations } = cdk;
-const { StackWithNestedStack, StackWithNestedStackUsingParameters } = require('./nested-stack');
+const { StackWithNestedStack,
+  StackWithNestedStackUsingParameters,
+  StackWithNestedStackUsingDefaultParameters } = require('./nested-stack');
 
 const stackPrefix = process.env.STACK_NAME_PREFIX;
 if (!stackPrefix) {
@@ -439,6 +441,10 @@ switch (stackSet) {
 
     new StackWithNestedStack(app, `${stackPrefix}-with-nested-stack`);
     new StackWithNestedStackUsingParameters(app, `${stackPrefix}-with-nested-stack-using-parameters`);
+    new StackWithNestedStackUsingDefaultParameters(
+      app,
+      `${stackPrefix}-with-nested-stack-using-default-parameters`
+    );
 
     new YourStack(app, `${stackPrefix}-termination-protection`, {
       terminationProtection: process.env.TERMINATION_PROTECTION !== 'FALSE' ? true : false,

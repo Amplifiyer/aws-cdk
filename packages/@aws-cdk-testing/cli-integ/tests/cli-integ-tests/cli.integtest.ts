@@ -395,7 +395,7 @@ integTest('stack in UPDATE_ROLLBACK_COMPLETE state can be updated', withDefaultF
       '--parameters', `TopicNameParam=${fixture.stackNamePrefix}@aww`,
     ],
     captureStderr: false,
-  })).rejects.toThrow('exited with error');;
+  })).rejects.toThrow('exited with error');
 
   response = await fixture.aws.cloudFormation('describeStacks', {
     StackName: stackArn,
